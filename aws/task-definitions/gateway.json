@@ -4,16 +4,35 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
   "memory": "512",
-  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskRole",
   "containerDefinitions": [
     {
       "name": "agrilens-gateway",
-      "image": "IMAGE_URI_GATEWAY",
+      "image": "${ECR_REGISTRY}/agrilens-gateway:latest",
       "portMappings": [
         {
           "containerPort": 80,
           "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "PORT",
+          "value": "80"
+        },
+        {
+          "name": "API_SERVICE_URL",
+          "value": "http://agrilens-api-service.agrilens-prod.local:3002"
+        },
+        {
+          "name": "AUTH_SERVICE_URL", 
+          "value": "http://agrilens-auth-service.agrilens-prod.local:3001"
         }
       ],
       "healthCheck": {
@@ -28,19 +47,10 @@
         "options": {
           "awslogs-group": "/aws/ecs/agrilens-gateway",
           "awslogs-region": "us-east-1",
-          "awslogs-stream-prefix": "ecs"
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
         }
-      },
-      "dependsOn": [
-        {
-          "containerName": "agrilens-api",
-          "condition": "HEALTHY"
-        },
-        {
-          "containerName": "agrilens-auth",
-          "condition": "HEALTHY"
-        }
-      ]
+      }
     }
   ]
 }

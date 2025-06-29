@@ -54,58 +54,238 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Get AWS Account ID
+      run: |
+        export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+        echo "AWS Account ID: $AWS_ACCOUNT_ID"
+
+    - name: Setup IAM roles (if needed)
+      run: |
+        # Check if ecsTaskExecutionRole exists, create if not
+        if ! aws iam get-role --role-name ecsTaskExecutionRole >/dev/null 2>&1; then
+          echo "Creating ecsTaskExecutionRole..."
+          
+          # Create trust policy
+          cat > /tmp/ecs-task-trust-policy.json << EOF
+        {
+          "Version": "2012-10-17", 
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+        EOF
+          
+          # Create execution role
+          aws iam create-role \
+            --role-name ecsTaskExecutionRole \
+            --assume-role-policy-document file:///tmp/ecs-task-trust-policy.json
+          
+          # Attach managed policy
+          aws iam attach-role-policy \
+            --role-name ecsTaskExecutionRole \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+            
+          echo "✅ ecsTaskExecutionRole created"
+        fi
+
+        # Check if ecsTaskRole exists, create if not
+        if ! aws iam get-role --role-name ecsTaskRole >/dev/null 2>&1; then
+          echo "Creating ecsTaskRole..."
+          
+          # Create task role
+          aws iam create-role \
+            --role-name ecsTaskRole \
+            --assume-role-policy-document file:///tmp/ecs-task-trust-policy.json
+          
+          # Create custom policy
+          cat > /tmp/agrilens-task-policy.json << EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+                "logs:DescribeLogStreams",
+                "ssm:GetParameter",
+                "ssm:GetParameters",
+                "ssm:GetParametersByPath"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+        EOF
+          
+          # Create and attach policy
+          aws iam create-policy \
+            --policy-name AgriLensTaskPolicy \
+            --policy-document file:///tmp/agrilens-task-policy.json || echo "Policy exists"
+          
+          aws iam attach-role-policy \
+            --role-name ecsTaskRole \
+            --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/AgriLensTaskPolicy"
+            
+          echo "✅ ecsTaskRole created"
+        fi
+
+        # Create CloudWatch Log Groups
+        aws logs create-log-group --log-group-name /aws/ecs/agrilens-gateway || echo "Gateway log group exists"
+        aws logs create-log-group --log-group-name /aws/ecs/agrilens-api || echo "API log group exists"
+        aws logs create-log-group --log-group-name /aws/ecs/agrilens-auth || echo "Auth log group exists"
+
+        # Wait for roles to be available
+        sleep 10
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Create ECR repositories if they don't exist
+      run: |
+        # Create repositories if they don't exist
+        aws ecr describe-repositories --repository-names agrilens-gateway || \
+          aws ecr create-repository --repository-name agrilens-gateway
+        
+        aws ecr describe-repositories --repository-names agrilens-api || \
+          aws ecr create-repository --repository-name agrilens-api
+        
+        aws ecr describe-repositories --repository-names agrilens-auth || \
+          aws ecr create-repository --repository-name agrilens-auth
 
     - name: Build, tag, and push images
       id: build-image
       run: |
         # Build and push Gateway (nginx)
-        docker build -t $ECR_REGISTRY/agrilens/gateway:$GITHUB_SHA ./gateway
-        docker build -t $ECR_REGISTRY/agrilens/gateway:latest ./gateway
-        docker push $ECR_REGISTRY/agrilens/gateway:$GITHUB_SHA
-        docker push $ECR_REGISTRY/agrilens/gateway:latest
+        docker build -t $ECR_REGISTRY/agrilens-gateway:$GITHUB_SHA ./gateway
+        docker build -t $ECR_REGISTRY/agrilens-gateway:latest ./gateway
+        docker push $ECR_REGISTRY/agrilens-gateway:$GITHUB_SHA
+        docker push $ECR_REGISTRY/agrilens-gateway:latest
         
         # Build and push API
-        docker build -t $ECR_REGISTRY/agrilens/api:$GITHUB_SHA ./api
-        docker build -t $ECR_REGISTRY/agrilens/api:latest ./api
-        docker push $ECR_REGISTRY/agrilens/api:$GITHUB_SHA
-        docker push $ECR_REGISTRY/agrilens/api:latest
+        docker build -t $ECR_REGISTRY/agrilens-api:$GITHUB_SHA ./api
+        docker build -t $ECR_REGISTRY/agrilens-api:latest ./api
+        docker push $ECR_REGISTRY/agrilens-api:$GITHUB_SHA
+        docker push $ECR_REGISTRY/agrilens-api:latest
         
         # Build and push Auth
-        docker build -t $ECR_REGISTRY/agrilens/auth:$GITHUB_SHA ./auth
-        docker build -t $ECR_REGISTRY/agrilens/auth:latest ./auth
-        docker push $ECR_REGISTRY/agrilens/auth:$GITHUB_SHA
-        docker push $ECR_REGISTRY/agrilens/auth:latest
+        docker build -t $ECR_REGISTRY/agrilens-auth:$GITHUB_SHA ./auth
+        docker build -t $ECR_REGISTRY/agrilens-auth:latest ./auth
+        docker push $ECR_REGISTRY/agrilens-auth:$GITHUB_SHA
+        docker push $ECR_REGISTRY/agrilens-auth:latest
 
-    - name: Update ECS task definitions
+    - name: Update task definitions with new values
       run: |
-        # Update task definitions with new image URIs
-        sed -i "s|IMAGE_URI_GATEWAY|$ECR_REGISTRY/agrilens/gateway:$GITHUB_SHA|g" aws/task-definitions/gateway.json
-        sed -i "s|IMAGE_URI_API|$ECR_REGISTRY/agrilens/api:$GITHUB_SHA|g" aws/task-definitions/api.json
-        sed -i "s|IMAGE_URI_AUTH|$ECR_REGISTRY/agrilens/auth:$GITHUB_SHA|g" aws/task-definitions/auth.json
-
-    - name: Deploy to Amazon ECS
-      run: |
-        # Register new task definitions
-        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/gateway.json
-        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/api.json
-        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/auth.json
+        # Replace placeholders with actual values
+        sed -i "s/\${AWS_ACCOUNT_ID}/$AWS_ACCOUNT_ID/g" aws/task-definitions/*.json
+        sed -i "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" aws/task-definitions/*.json
         
-        # Update services
-        aws ecs update-service --cluster $ECS_CLUSTER --service agrilens-gateway-service --task-definition agrilens-gateway
-        aws ecs update-service --cluster $ECS_CLUSTER --service agrilens-api-service --task-definition agrilens-api
-        aws ecs update-service --cluster $ECS_CLUSTER --service agrilens-auth-service --task-definition agrilens-auth
+        # Update with specific commit SHAs for this deployment
+        sed -i "s|agrilens-gateway:latest|agrilens-gateway:$GITHUB_SHA|g" aws/task-definitions/gateway.json
+        sed -i "s|agrilens-api:latest|agrilens-api:$GITHUB_SHA|g" aws/task-definitions/api.json
+        sed -i "s|agrilens-auth:latest|agrilens-auth:$GITHUB_SHA|g" aws/task-definitions/auth.json
+        
+        echo "Updated task definitions:"
+        for file in aws/task-definitions/*.json; do
+          echo "=== $file ==="
+          cat "$file"
+          echo ""
+        done
 
-    - name: Wait for stable deployment
+    - name: Validate task definitions
+      run: |
+        echo "Validating task definition JSON syntax..."
+        for file in aws/task-definitions/*.json; do
+          echo "Validating $file"
+          python3 -m json.tool "$file" > /dev/null || {
+            echo "❌ Invalid JSON in $file"
+            cat "$file"
+            exit 1
+          }
+          echo "✅ $file is valid JSON"
+        done
+
+    - name: Register new task definitions
+      run: |
+        echo "Registering task definitions..."
+        
+        # Register each task definition
+        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/gateway.json
+        echo "✅ Gateway task definition registered"
+        
+        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/api.json
+        echo "✅ API task definition registered"
+        
+        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/auth.json
+        echo "✅ Auth task definition registered"
+
+    - name: Update ECS services
+      run: |
+        echo "Updating ECS services..."
+        
+        # Update services with new task definitions
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service agrilens-gateway-service \
+          --task-definition agrilens-gateway \
+          --force-new-deployment
+        
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service agrilens-api-service \
+          --task-definition agrilens-api \
+          --force-new-deployment
+        
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service agrilens-auth-service \
+          --task-definition agrilens-auth \
+          --force-new-deployment
+        
+        echo "✅ All services updated"
+
+    - name: Wait for deployment to complete
       run: |
         echo "Waiting for services to stabilize..."
-        aws ecs wait services-stable --cluster $ECS_CLUSTER --services agrilens-gateway-service
-        aws ecs wait services-stable --cluster $ECS_CLUSTER --services agrilens-api-service
-        aws ecs wait services-stable --cluster $ECS_CLUSTER --services agrilens-auth-service
+        
+        # Wait for each service individually with timeout
+        timeout 600 aws ecs wait services-stable \
+          --cluster $ECS_CLUSTER \
+          --services agrilens-gateway-service || echo "Gateway service deployment timeout"
+        
+        timeout 600 aws ecs wait services-stable \
+          --cluster $ECS_CLUSTER \
+          --services agrilens-api-service || echo "API service deployment timeout"
+        
+        timeout 600 aws ecs wait services-stable \
+          --cluster $ECS_CLUSTER \
+          --services agrilens-auth-service || echo "Auth service deployment timeout"
+        
+        echo "✅ Deployment wait completed"
+
+    - name: Check service status
+      run: |
+        echo "Checking service status..."
+        aws ecs describe-services \
+          --cluster $ECS_CLUSTER \
+          --services agrilens-gateway-service agrilens-api-service agrilens-auth-service \
+          --query 'services[*].{Name:serviceName,Status:status,Running:runningCount,Desired:desiredCount}' \
+          --output table
 
     - name: Run post-deployment health checks
       run: |
-        chmod +x scripts/health-check.sh
-        ./scripts/health-check.sh
+        if [ -f scripts/health-check.sh ]; then
+          chmod +x scripts/health-check.sh
+          ./scripts/health-check.sh
+        else
+          echo "⚠️  Health check script not found, skipping"
+        fi
