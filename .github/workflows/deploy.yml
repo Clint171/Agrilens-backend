@@ -1,0 +1,111 @@
+name: Deploy AgriLens to AWS
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  ECS_CLUSTER: agrilens-prod
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Create test environment file
+      run: |
+        cp .env.example .env
+        echo "JWT_SECRET=test-secret-key" >> .env
+        echo "OPENAI_API_KEY=test-key" >> .env
+
+    - name: Build and test services
+      run: |
+        make build
+        make up
+        sleep 30  # Wait for services to start
+        make test
+
+    - name: Cleanup
+      run: make clean
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push images
+      id: build-image
+      run: |
+        # Build and push Gateway (nginx)
+        docker build -t $ECR_REGISTRY/agrilens/gateway:$GITHUB_SHA ./gateway
+        docker build -t $ECR_REGISTRY/agrilens/gateway:latest ./gateway
+        docker push $ECR_REGISTRY/agrilens/gateway:$GITHUB_SHA
+        docker push $ECR_REGISTRY/agrilens/gateway:latest
+        
+        # Build and push API
+        docker build -t $ECR_REGISTRY/agrilens/api:$GITHUB_SHA ./api
+        docker build -t $ECR_REGISTRY/agrilens/api:latest ./api
+        docker push $ECR_REGISTRY/agrilens/api:$GITHUB_SHA
+        docker push $ECR_REGISTRY/agrilens/api:latest
+        
+        # Build and push Auth
+        docker build -t $ECR_REGISTRY/agrilens/auth:$GITHUB_SHA ./auth
+        docker build -t $ECR_REGISTRY/agrilens/auth:latest ./auth
+        docker push $ECR_REGISTRY/agrilens/auth:$GITHUB_SHA
+        docker push $ECR_REGISTRY/agrilens/auth:latest
+
+    - name: Update ECS task definitions
+      run: |
+        # Update task definitions with new image URIs
+        sed -i "s|IMAGE_URI_GATEWAY|$ECR_REGISTRY/agrilens/gateway:$GITHUB_SHA|g" aws/task-definitions/gateway.json
+        sed -i "s|IMAGE_URI_API|$ECR_REGISTRY/agrilens/api:$GITHUB_SHA|g" aws/task-definitions/api.json
+        sed -i "s|IMAGE_URI_AUTH|$ECR_REGISTRY/agrilens/auth:$GITHUB_SHA|g" aws/task-definitions/auth.json
+
+    - name: Deploy to Amazon ECS
+      run: |
+        # Register new task definitions
+        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/gateway.json
+        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/api.json
+        aws ecs register-task-definition --cli-input-json file://aws/task-definitions/auth.json
+        
+        # Update services
+        aws ecs update-service --cluster $ECS_CLUSTER --service agrilens-gateway-service --task-definition agrilens-gateway
+        aws ecs update-service --cluster $ECS_CLUSTER --service agrilens-api-service --task-definition agrilens-api
+        aws ecs update-service --cluster $ECS_CLUSTER --service agrilens-auth-service --task-definition agrilens-auth
+
+    - name: Wait for stable deployment
+      run: |
+        echo "Waiting for services to stabilize..."
+        aws ecs wait services-stable --cluster $ECS_CLUSTER --services agrilens-gateway-service
+        aws ecs wait services-stable --cluster $ECS_CLUSTER --services agrilens-api-service
+        aws ecs wait services-stable --cluster $ECS_CLUSTER --services agrilens-auth-service
+
+    - name: Run post-deployment health checks
+      run: |
+        chmod +x scripts/health-check.sh
+        ./scripts/health-check.sh

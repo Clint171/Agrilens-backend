@@ -75,3 +75,44 @@ health:
 	@curl -s http://localhost/health | jq . 2>/dev/null || echo "❌ Gateway not responding"
 	@curl -s http://localhost/auth/health | jq . 2>/dev/null || echo "❌ Auth service not responding"
 	@curl -s http://localhost/api/health | jq . 2>/dev/null || echo "❌ API service not responding"
+
+
+# Production deployment commands
+
+prod-deploy:
+	@echo "Triggering production deployment..."
+	git push origin main
+
+prod-logs:
+	@echo "Fetching production logs..."
+	aws logs tail /aws/ecs/agrilens-gateway --follow &
+	aws logs tail /aws/ecs/agrilens-api --follow &
+	aws logs tail /aws/ecs/agrilens-auth --follow &
+	wait
+
+prod-health:
+	@echo "Checking production health..."
+	chmod +x scripts/health-check.sh
+	./scripts/health-check.sh
+
+prod-rollback:
+	@echo "Rolling back to previous version..."
+	aws ecs update-service --cluster agrilens-prod --service agrilens-gateway-service --force-new-deployment
+	aws ecs update-service --cluster agrilens-prod --service agrilens-api-service --force-new-deployment
+	aws ecs update-service --cluster agrilens-prod --service agrilens-auth-service --force-new-deployment
+
+prod-scale:
+	@echo "Scaling production services..."
+	aws ecs update-service --cluster agrilens-prod --service agrilens-gateway-service --desired-count 2
+	aws ecs update-service --cluster agrilens-prod --service agrilens-api-service --desired-count 3
+	aws ecs update-service --cluster agrilens-prod --service agrilens-auth-service --desired-count 2
+
+# Local commands for production testing
+prod-build:
+	docker-compose -f docker-compose.prod.yml build
+
+prod-test-local:
+	docker-compose -f docker-compose.prod.yml up -d
+	sleep 30
+	./test-endpoints.sh
+	docker-compose -f docker-compose.prod.yml down
