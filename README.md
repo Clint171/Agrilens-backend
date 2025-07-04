@@ -4,7 +4,7 @@
 
 The AgriLens API is a comprehensive plant disease detection system that allows users to upload images of plants and receive AI-powered disease diagnosis. The API supports user authentication, image analysis, and diagnosis history management.
 
-**Base URL:** `http://localhost:4000` (Development) | `https://api.agrilens.com` (Production)
+**Base URL:** `http://localhost:4000` (Development) | `http://100.24.44.71` (Production)
 
 **API Version:** 1.0.0
 
