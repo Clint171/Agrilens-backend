@@ -22,6 +22,12 @@ mongoose.connect(process.env.MONGO_URL, {
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+    res.json({ status: "OK" });
+});
+
 // POST /diagnose - accepts image upload (single or multiple)
 app.post('/diagnose', upload.array('images'), async (req, res) => {
     try {
