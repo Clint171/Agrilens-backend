@@ -1,0 +1,390 @@
+openapi: 3.0.3
+info:
+  title: AgriLens API
+  description: Complete API for AgriLens plant disease detection system
+  version: 1.0.0
+  contact:
+    name: AgriLens Team
+    email: clintsimiyu004@gmail.com
+servers:
+  - url: http://localhost:4000
+    description: Development server
+  - url: http://100.24.44.71
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Health Check
+      description: Check if the API server is running and healthy
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "OK"
+              example:
+                status: "OK"
+
+  /signup:
+    post:
+      summary: User Registration (Local)
+      description: Register a new user with email and password
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - firstName
+                - lastName
+                - email
+                - password
+              properties:
+                firstName:
+                  type: string
+                  example: "John"
+                lastName:
+                  type: string
+                  example: "Doe"
+                email:
+                  type: string
+                  format: email
+                  example: "john.doe@example.com"
+                password:
+                  type: string
+                  format: password
+                  example: "securePassword123"
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Bad request - Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "All fields are required"
+
+  /signup/google:
+    post:
+      summary: User Registration (Google)
+      description: Register a new user using Google OAuth token
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - googleToken
+              properties:
+                googleToken:
+                  type: string
+                  description: JWT token from Google OAuth
+                  example: "your_google_jwt_token_here"
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '500':
+          description: Internal server error - Invalid Google token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /login:
+    post:
+      summary: User Login (Local)
+      description: Authenticate user with email and password
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "john.doe@example.com"
+                password:
+                  type: string
+                  format: password
+                  example: "securePassword123"
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+              example:
+                message: "Login successful"
+                token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                user:
+                  id: "user_123"
+                  email: "john.doe@example.com"
+                  firstName: "John"
+                  lastName: "Doe"
+                  authProvider: "local"
+        '400':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid credentials"
+
+  /login/google:
+    post:
+      summary: User Login (Google)
+      description: Authenticate user using Google OAuth token
+      tags:
+        - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - googleToken
+              properties:
+                googleToken:
+                  type: string
+                  description: JWT token from Google OAuth
+                  example: "your_google_jwt_token_here"
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Bad request - Invalid token or user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /diagnose:
+    post:
+      summary: Diagnose Plant Disease
+      description: Upload plant images to get disease diagnosis
+      tags:
+        - Diagnosis
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - images
+              properties:
+                images:
+                  type: string
+                  format: binary
+                  description: Plant image file (JPG, PNG, etc.)
+      responses:
+        '200':
+          description: Diagnosis completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosisResponse'
+        '400':
+          description: Bad request - No image uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "No image uploaded"
+        '401':
+          description: Unauthorized - Access token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Access token required"
+        '403':
+          description: Forbidden - Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid or expired token"
+
+  /diagnoses:
+    get:
+      summary: Get User Diagnosis History
+      description: Retrieve all diagnosis history for the authenticated user
+      tags:
+        - Diagnosis
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Diagnosis history retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DiagnosisResponse'
+        '401':
+          description: Unauthorized - Access token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden - Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique user identifier
+          example: "user_123"
+        email:
+          type: string
+          format: email
+          description: User's email address
+          example: "john.doe@example.com"
+        firstName:
+          type: string
+          description: User's first name
+          example: "John"
+        lastName:
+          type: string
+          description: User's last name
+          example: "Doe"
+        authProvider:
+          type: string
+          enum: [local, google]
+          description: Authentication provider used
+          example: "local"
+
+    AuthResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Success message
+          example: "Login successful"
+        token:
+          type: string
+          description: JWT authentication token
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        user:
+          $ref: '#/components/schemas/User'
+
+    DiagnosisResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique diagnosis identifier
+          example: "diag_123"
+        disease:
+          type: string
+          description: Detected disease name
+          example: "Tomato Late Blight"
+        cropsAffected:
+          type: array
+          items:
+            type: string
+          description: List of crops that can be affected by this disease
+          example: ["Tomato", "Potato", "Pepper"]
+        affectedAreas:
+          type: array
+          items:
+            type: string
+          description: Plant parts affected by the disease
+          example: ["Leaves", "Stems", "Fruits"]
+        symptoms:
+          type: array
+          items:
+            type: string
+          description: List of disease symptoms
+          example: ["Dark spots on leaves", "Yellowing", "Wilting"]
+        recommendedAction:
+          type: string
+          description: Recommended treatment or action
+          example: "Apply fungicide spray and improve air circulation"
+        confidenceScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence score of the diagnosis (0-1)
+          example: 0.85
+        createdAt:
+          type: string
+          format: date-time
+          description: Timestamp when diagnosis was created
+          example: "2024-01-15T10:30:00Z"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "Invalid credentials"
+
+tags:
+  - name: Health
+    description: API health check endpoints
+  - name: Authentication
+    description: User authentication and registration
+  - name: Diagnosis
+    description: Plant disease diagnosis and history
