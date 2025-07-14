@@ -13,7 +13,10 @@ const { OAuth2Client } = require('google-auth-library');
 dotenv.config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: 'https://agrilens-frontend.vercel.app',
+  credentials: true
+}));
 app.use(express.json());
 
 // Google OAuth2 client
