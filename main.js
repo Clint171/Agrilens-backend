@@ -414,7 +414,7 @@ const getLLMAnalysisBypass = async (base64Images) => {
       }
     });
 
-    return JSON.parse(response.data.choices[0].message.content);
+    return JSON.parse(response.data.choices[0].message.content.replace(/`/g, ''));
   } catch (error) {
     console.error('LLM analysis error:', error);
     // Return default analysis if LLM fails
