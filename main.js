@@ -360,7 +360,7 @@ const getLLMAnalysis = async (disease, accuracy) => {
 // Bypass model, for test
 const getLLMAnalysisBypass = async (base64Images) => {
   try {
-    const prompt = `Analyze the plant in the uploaded image(s) to identify any diseases or health issues.
+    const prompt = `Analyze the plant in the uploaded image to identify any diseases or health issues.
 
     Please provide a detailed analysis in the following JSON format:
     {
@@ -371,7 +371,7 @@ const getLLMAnalysisBypass = async (base64Images) => {
       "recommendedAction": "detailed recommended treatment or prevention measures"
     }
     
-    Only return the JSON response, no additional text or formatting.`;
+    Only return a valid JSON response, no additional text.`;
 
     // Prepare messages with image(s)
     const messages = [
@@ -414,7 +414,7 @@ const getLLMAnalysisBypass = async (base64Images) => {
       }
     });
 
-    return JSON.parse(response.data.choices[0].message.content.replace(/`/g, ''));
+    return JSON.parse(response.data.choices[0].message.content.replace(/`/g, '').replace(/json/, ''));
   } catch (error) {
     console.error('LLM analysis error:', error);
     // Return default analysis if LLM fails
