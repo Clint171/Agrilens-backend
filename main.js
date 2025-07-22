@@ -371,7 +371,7 @@ const getLLMAnalysisBypass = async (base64Images) => {
       "recommendedAction": "detailed recommended treatment or prevention measures"
     }
     
-    Only return the JSON response, no additional text.`;
+    Only return the JSON response, no additional text or formatting.`;
 
     // Prepare messages with image(s)
     const messages = [
