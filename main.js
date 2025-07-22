@@ -357,6 +357,77 @@ const getLLMAnalysis = async (disease, accuracy) => {
   }
 };
 
+// Bypass model, for test
+const getLLMAnalysisBypass = async (base64Images) => {
+  try {
+    const prompt = `Analyze the plant in the uploaded image(s) to identify any diseases or health issues.
+
+    Please provide a detailed analysis in the following JSON format:
+    {
+      "diseaseType": "specific disease name or 'Healthy' if no disease detected",
+      "cropsAffected": ["crop type(s) identified"],
+      "affectedAreas": ["specific plant parts affected"],
+      "symptoms": ["visible symptoms observed"],
+      "recommendedAction": "detailed recommended treatment or prevention measures"
+    }
+    
+    Only return the JSON response, no additional text.`;
+
+    // Prepare messages with image(s)
+    const messages = [
+      {
+        role: 'system',
+        content: 'You are an expert agricultural pathologist. Analyze plant images to identify diseases and provide accurate information in JSON format only.'
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: prompt
+          }
+        ]
+      }
+    ];
+
+    // Add images to the user message
+    const imageArray = Array.isArray(base64Images) ? base64Images : [base64Images];
+    imageArray.forEach(base64Image => {
+      messages[1].content.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:image/jpeg;base64,${base64Image}`,
+          detail: 'high'
+        }
+      });
+    });
+
+    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o', // Using GPT-4 Vision model for image analysis
+      messages: messages,
+      max_tokens: 500,
+      temperature: 0.3
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return JSON.parse(response.data.choices[0].message.content);
+  } catch (error) {
+    console.error('LLM analysis error:', error);
+    // Return default analysis if LLM fails
+    return {
+      diseaseType: 'Analysis unavailable',
+      cropsAffected: ['Unable to identify'],
+      affectedAreas: ['Unable to determine'],
+      symptoms: ['Please consult agricultural expert'],
+      recommendedAction: 'Please consult with a local agricultural extension officer for proper diagnosis and treatment recommendations.'
+    };
+  }
+};
+
 // POST /diagnose - Enhanced with authentication and LLM analysis
 app.post('/diagnose', authenticateToken, upload.array('images'), async (req, res) => {
   try {
@@ -376,7 +447,10 @@ app.post('/diagnose', authenticateToken, upload.array('images'), async (req, res
     const { disease, accuracy } = modelResponse.data;
 
     // Get LLM analysis
-    const llmAnalysis = await getLLMAnalysis(disease, accuracy);
+    // const llmAnalysis = await getLLMAnalysis(disease, accuracy);
+
+    // Bypass
+    const llmAnalysis = await getLLMAnalysisBypass(base64Images);
 
     // Save to database
     const diagnosis = new Diagnosis({
