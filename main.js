@@ -3,16 +3,25 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const multer = require('multer');
-//const fs = require('fs');
 const axios = require('axios');
 const path = require('path');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
+const http = require('http');
+const { Server } = require('socket.io');
 
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: process.env.CLIENT_URL || "*",
+    methods: ["GET", "POST"]
+  }
+});
+
 app.use(cors());
 app.use(express.json());
 
@@ -58,6 +67,22 @@ const diagnosisSchema = new mongoose.Schema({
 
 const Diagnosis = mongoose.model('Diagnosis', diagnosisSchema);
 
+// Chat Session Schema
+const chatSessionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  sessionId: { type: String, required: true, unique: true },
+  messages: [{
+    role: { type: String, enum: ['user', 'assistant'], required: true },
+    content: { type: String, required: true },
+    timestamp: { type: Date, default: Date.now }
+  }],
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  lastActivity: { type: Date, default: Date.now }
+});
+
+const ChatSession = mongoose.model('ChatSession', chatSessionSchema);
+
 // Multer setup
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -76,6 +101,23 @@ const authenticateToken = (req, res, next) => {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
     req.user = user;
+    next();
+  });
+};
+
+// Socket.IO JWT middleware
+const authenticateSocketToken = (socket, next) => {
+  const token = socket.handshake.auth.token;
+  
+  if (!token) {
+    return next(new Error('Access token required'));
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return next(new Error('Invalid or expired token'));
+    }
+    socket.user = user;
     next();
   });
 };
@@ -105,6 +147,265 @@ const verifyGoogleToken = async (token) => {
     throw new Error('Invalid Google token');
   }
 };
+
+// Helper function to get user's diagnosis context
+const getUserDiagnosisContext = async (userId) => {
+  try {
+    const diagnoses = await Diagnosis.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(10); // Get last 10 diagnoses
+
+    if (diagnoses.length === 0) {
+      return "No previous diagnoses found.";
+    }
+
+    const contextString = diagnoses.map((diagnosis, index) => {
+      return `Diagnosis ${index + 1} (${diagnosis.createdAt.toDateString()}):
+- Disease: ${diagnosis.llmAnalysis.diseaseType}
+- Crops Affected: ${diagnosis.llmAnalysis.cropsAffected.join(', ')}
+- Affected Areas: ${diagnosis.llmAnalysis.affectedAreas.join(', ')}
+- Symptoms: ${diagnosis.llmAnalysis.symptoms.join(', ')}
+- Recommended Action: ${diagnosis.llmAnalysis.recommendedAction}
+- Confidence Score: ${diagnosis.confidenceScore}%`;
+    }).join('\n\n');
+
+    return `Previous diagnoses for context:\n\n${contextString}`;
+  } catch (error) {
+    console.error('Error fetching diagnosis context:', error);
+    return "Unable to retrieve previous diagnoses.";
+  }
+};
+
+// Helper function to get AI chat response
+const getAIChatResponse = async (messages, userContext) => {
+  try {
+    const systemPrompt = `You are AgriLens AI, an expert agricultural assistant specializing in plant disease diagnosis and farm management. You help farmers and agricultural professionals with:
+
+1. Plant disease identification and treatment
+2. Crop management advice
+3. Agricultural best practices
+4. Interpretation of previous diagnoses
+
+User Context:
+${userContext}
+
+Instructions:
+- Use the user's previous diagnoses to provide personalized advice
+- Reference specific past diagnoses when relevant
+- Provide practical, actionable advice
+- Be concise but thorough
+- If asked about diseases not in their history, provide general agricultural guidance
+- Always encourage consulting local agricultural extension services for serious issues`;
+
+    const chatMessages = [
+      {
+        role: 'system',
+        content: systemPrompt
+      },
+      ...messages
+    ];
+
+    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4',
+      messages: chatMessages,
+      max_tokens: 800,
+      temperature: 0.7,
+      presence_penalty: 0.1,
+      frequency_penalty: 0.1
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return response.data.choices[0].message.content;
+  } catch (error) {
+    console.error('AI chat response error:', error);
+    return "I apologize, but I'm having trouble processing your request right now. Please try again later or consult with a local agricultural expert.";
+  }
+};
+
+// Socket.IO connection handling
+io.use(authenticateSocketToken);
+
+io.on('connection', async (socket) => {
+  console.log(`User ${socket.user.email} connected to chat`);
+
+  // Get user's diagnosis context
+  const userContext = await getUserDiagnosisContext(socket.user.id);
+
+  // Join user to their personal room
+  socket.join(`user_${socket.user.id}`);
+
+  // Handle new chat session
+  socket.on('start_chat', async (data) => {
+    try {
+      const sessionId = `${socket.user.id}_${Date.now()}`;
+      
+      const chatSession = new ChatSession({
+        userId: socket.user.id,
+        sessionId,
+        messages: []
+      });
+
+      await chatSession.save();
+
+      socket.emit('chat_started', {
+        sessionId,
+        message: 'Hello! I\'m AgriLens AI, your agricultural assistant. I can help you with plant diseases, crop management, and interpret your previous diagnoses. How can I assist you today?'
+      });
+    } catch (error) {
+      console.error('Start chat error:', error);
+      socket.emit('error', { message: 'Failed to start chat session' });
+    }
+  });
+
+  // Handle chat messages
+  socket.on('chat_message', async (data) => {
+    try {
+      const { sessionId, message } = data;
+
+      if (!sessionId || !message) {
+        socket.emit('error', { message: 'Session ID and message are required' });
+        return;
+      }
+
+      // Find chat session
+      const chatSession = await ChatSession.findOne({ 
+        sessionId, 
+        userId: socket.user.id 
+      });
+
+      if (!chatSession) {
+        socket.emit('error', { message: 'Chat session not found' });
+        return;
+      }
+
+      // Add user message to session
+      chatSession.messages.push({
+        role: 'user',
+        content: message
+      });
+
+      chatSession.lastActivity = new Date();
+      await chatSession.save();
+
+      // Emit user message back to client
+      socket.emit('message_received', {
+        role: 'user',
+        content: message,
+        timestamp: new Date()
+      });
+
+      // Prepare messages for AI
+      const messagesForAI = chatSession.messages.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }));
+
+      // Get AI response
+      const aiResponse = await getAIChatResponse(messagesForAI, userContext);
+
+      // Add AI response to session
+      chatSession.messages.push({
+        role: 'assistant',
+        content: aiResponse
+      });
+
+      chatSession.lastActivity = new Date();
+      await chatSession.save();
+
+      // Emit AI response to client
+      socket.emit('ai_response', {
+        role: 'assistant',
+        content: aiResponse,
+        timestamp: new Date()
+      });
+
+    } catch (error) {
+      console.error('Chat message error:', error);
+      socket.emit('error', { message: 'Failed to process message' });
+    }
+  });
+
+  // Handle get chat history
+  socket.on('get_chat_history', async (data) => {
+    try {
+      const { sessionId } = data;
+
+      const chatSession = await ChatSession.findOne({ 
+        sessionId, 
+        userId: socket.user.id 
+      });
+
+      if (!chatSession) {
+        socket.emit('error', { message: 'Chat session not found' });
+        return;
+      }
+
+      socket.emit('chat_history', {
+        sessionId,
+        messages: chatSession.messages
+      });
+
+    } catch (error) {
+      console.error('Get chat history error:', error);
+      socket.emit('error', { message: 'Failed to retrieve chat history' });
+    }
+  });
+
+  // Handle get user's chat sessions
+  socket.on('get_chat_sessions', async () => {
+    try {
+      const sessions = await ChatSession.find({ 
+        userId: socket.user.id,
+        isActive: true 
+      })
+      .sort({ lastActivity: -1 })
+      .limit(20)
+      .select('sessionId createdAt lastActivity messages');
+
+      const sessionSummaries = sessions.map(session => ({
+        sessionId: session.sessionId,
+        createdAt: session.createdAt,
+        lastActivity: session.lastActivity,
+        messageCount: session.messages.length,
+        lastMessage: session.messages.length > 0 ? 
+          session.messages[session.messages.length - 1].content.substring(0, 100) + '...' : 
+          'No messages'
+      }));
+
+      socket.emit('chat_sessions', sessionSummaries);
+
+    } catch (error) {
+      console.error('Get chat sessions error:', error);
+      socket.emit('error', { message: 'Failed to retrieve chat sessions' });
+    }
+  });
+
+  // Handle end chat session
+  socket.on('end_chat', async (data) => {
+    try {
+      const { sessionId } = data;
+
+      await ChatSession.findOneAndUpdate(
+        { sessionId, userId: socket.user.id },
+        { isActive: false }
+      );
+
+      socket.emit('chat_ended', { sessionId });
+
+    } catch (error) {
+      console.error('End chat error:', error);
+      socket.emit('error', { message: 'Failed to end chat session' });
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`User ${socket.user.email} disconnected from chat`);
+  });
+});
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -443,8 +744,8 @@ app.post('/diagnose', authenticateToken, upload.array('images'), async (req, res
     };
 
     // Get prediction from model
-    const modelResponse = await axios.post(`${process.env.MODEL_URL}`, payload);
-    const { disease, accuracy } = modelResponse.data;
+    // const modelResponse = await axios.post(`${process.env.MODEL_URL}`, payload);
+    const { disease, accuracy } = { disease: 'Unknown', accuracy: 0 };
 
     // Get LLM analysis
     // const llmAnalysis = await getLLMAnalysis(disease, accuracy);
@@ -508,7 +809,63 @@ app.get('/diagnoses', authenticateToken, async (req, res) => {
   }
 });
 
+// REST endpoint to get chat sessions (alternative to WebSocket)
+app.get('/chat/sessions', authenticateToken, async (req, res) => {
+  try {
+    const sessions = await ChatSession.find({ 
+      userId: req.user.id,
+      isActive: true 
+    })
+    .sort({ lastActivity: -1 })
+    .limit(20)
+    .select('sessionId createdAt lastActivity messages');
+
+    const sessionSummaries = sessions.map(session => ({
+      sessionId: session.sessionId,
+      createdAt: session.createdAt,
+      lastActivity: session.lastActivity,
+      messageCount: session.messages.length,
+      lastMessage: session.messages.length > 0 ? 
+        session.messages[session.messages.length - 1].content.substring(0, 100) + '...' : 
+        'No messages'
+    }));
+
+    res.json(sessionSummaries);
+  } catch (error) {
+    console.error('Get chat sessions error:', error);
+    res.status(500).json({ error: 'Failed to retrieve chat sessions' });
+  }
+});
+
+// REST endpoint to get specific chat session
+app.get('/chat/sessions/:sessionId', authenticateToken, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    const chatSession = await ChatSession.findOne({ 
+      sessionId, 
+      userId: req.user.id 
+    });
+
+    if (!chatSession) {
+      return res.status(404).json({ error: 'Chat session not found' });
+    }
+
+    res.json({
+      sessionId: chatSession.sessionId,
+      messages: chatSession.messages,
+      createdAt: chatSession.createdAt,
+      lastActivity: chatSession.lastActivity
+    });
+
+  } catch (error) {
+    console.error('Get chat session error:', error);
+    res.status(500).json({ error: 'Failed to retrieve chat session' });
+  }
+});
+
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`WebSocket server ready for AI chat`);
 });

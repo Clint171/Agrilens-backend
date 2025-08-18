@@ -8,7 +8,7 @@ app.use(express.json());
 app.post('/webhook', (req, res) => {
   console.log('🚀 Webhook received');
 
-  exec('/home/ec2-user/deploy.sh', (error, stdout, stderr) => {
+  exec('./deploy.sh', (error, stdout, stderr) => {
     if (error) {
       console.error('❌ Deployment error:', stderr);
       return res.status(500).send('Deployment failed');
