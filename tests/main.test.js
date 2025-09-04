@@ -29,7 +29,7 @@ describe('AgriLens Server Test Suite', () => {
     }
 
     // Now import the server modules
-    const serverModule = require('../server');
+    const serverModule = require('../main');
     app = serverModule.app;
     server = serverModule.server;
     ioServer = serverModule.io;

@@ -1,4 +1,4 @@
-// tests/setup.js - Fixed MongoDB setup
+// tests/setup.js - Fixed MongoDB setup with latest version
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const mongoose = require('mongoose');
 
@@ -10,10 +10,10 @@ beforeAll(async () => {
   console.log('Starting MongoDB Memory Server...');
   
   try {
-    // Create MongoDB Memory Server instance
+    // Create MongoDB Memory Server instance with latest version
     mongoServer = await MongoMemoryServer.create({
       binary: {
-        version: '6.0.0', // Specify MongoDB version
+        // version: 'latest', // Use latest version instead of 6.0.0
         downloadDir: './node_modules/.cache/mongodb-memory-server/mongodb-binaries',
       },
       instance: {
