@@ -8,6 +8,8 @@ RUN npm install
 
 COPY . .
 
-EXPOSE 4000
+COPY check_env.sh ./
+RUN chmod +x check_env.sh
 
-CMD ["node", "main.js"]
+EXPOSE 4000
+CMD ["./check_env.sh"]
