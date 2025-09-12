@@ -192,10 +192,10 @@ ${userContext}
 Instructions:
 - Use the user's previous diagnoses to provide personalized advice
 - Reference specific past diagnoses when relevant
-- Provide practical, actionable advice
+- Provide practical, actionable advice for Kenyan farmers
 - Be concise but thorough
 - If asked about diseases not in their history, provide general agricultural guidance
-- Always encourage consulting local agricultural extension services for serious issues`;
+- Always encourage consulting local agricultural extension services for complex issues`;
 
     const chatMessages = [
       {
@@ -865,7 +865,21 @@ app.get('/chat/sessions/:sessionId', authenticateToken, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`WebSocket server ready for AI chat`);
-});
+
+// Only start server if not in test environment
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`WebSocket server ready for AI chat`);
+  });
+}
+
+module.exports = { 
+  app, 
+  server, 
+  io,
+  // Also export models for direct testing if needed
+  User: require('mongoose').model('User'),
+  Diagnosis: require('mongoose').model('Diagnosis'), 
+  ChatSession: require('mongoose').model('ChatSession')
+};

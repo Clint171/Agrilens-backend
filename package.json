@@ -4,7 +4,37 @@
   "description": "",
   "main": "main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "NODE_ENV=test jest --detectOpenHandles --forceExit",
+    "test:watch": "NODE_ENV=test jest --watch --detectOpenHandles",
+    "test:coverage": "NODE_ENV=test jest --coverage --detectOpenHandles --forceExit",
+    "test:verbose": "NODE_ENV=test jest --verbose --detectOpenHandles --forceExit",
+    "test:debug": "NODE_ENV=test node --inspect-brk node_modules/.bin/jest --runInBand --detectOpenHandles",
+    "mongodb:predownload": "node scripts/predownload-mongodb.js"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "setupFilesAfterEnv": [
+      "<rootDir>/tests/setup.js"
+    ],
+    "testMatch": [
+      "**/tests/**/*.test.js",
+      "**/tests/**/*.spec.js"
+    ],
+    "collectCoverageFrom": [
+      "server.js",
+      "routes/**/*.js",
+      "models/**/*.js",
+      "middleware/**/*.js"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "testTimeout": 30000,
+    "maxWorkers": 1,
+    "detectOpenHandles": true,
+    "forceExit": true
   },
   "repository": {
     "type": "git",
@@ -19,6 +49,7 @@
   },
   "homepage": "https://github.com/Clint171/Agrilens-backend#readme",
   "dependencies": {
+    "@types/jest": "^30.0.0",
     "axios": "^1.10.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
@@ -27,8 +58,11 @@
     "google-auth-library": "^10.1.0",
     "jest": "^30.0.5",
     "jsonwebtoken": "^9.0.2",
+    "mongodb-memory-server": "^10.2.0",
     "mongoose": "^8.16.1",
     "multer": "^2.0.1",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "supertest": "^7.1.4"
   }
 }

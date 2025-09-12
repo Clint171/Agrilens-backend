@@ -6,17 +6,15 @@ const app = express();
 app.use(express.json());
 
 app.post('/webhook', (req, res) => {
-  console.log('🚀 Webhook received');
 
-  exec('./deploy.sh', (error, stdout, stderr) => {
-    if (error) {
-      console.error('❌ Deployment error:', stderr);
-      return res.status(500).send('Deployment failed');
-    }
+  // Check for secret
+  if( req.headers['x-webhook-secret'] !== process.env.WEBHOOK_SECRET ) {
+    console.error('❌ Unauthorized webhook attempt');
+    return res.status(401).send('Unauthorized');
+  }
 
-    console.log('✅ Deployment output:\n', stdout);
-    res.status(200).send('Deployed successfully');
-  });
+  // Pull the main branch, and restart main.js
+  
 });
 
 // Start the webhook server
