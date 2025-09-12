@@ -11,10 +11,30 @@ on:
       - closed
 
 jobs:
-  build-and-push:
-    # Only run on push to main or when PR is merged to main
-    if: github.ref == 'refs/heads/main' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+  test:
+    runs-on: ubuntu-latest
     
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run tests
+      run: npm run test
+
+  build-and-push:
+    # Only run on push to main or when PR is merged to main, and after tests pass
+    if: (github.ref == 'refs/heads/main' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')) && needs.test.result == 'success'
+    
+    needs: test
     runs-on: ubuntu-latest
     
     steps:
