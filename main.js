@@ -730,14 +730,25 @@ const getLLMAnalysisBypass = async (base64Images) => {
 };
 
 // POST /diagnose - Enhanced with authentication and LLM analysis
-app.post('/diagnose', authenticateToken, upload.array('images'), async (req, res) => {
+app.post('/diagnose', authenticateToken, async (req, res) => {
   try {
-    const files = req.files;
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No image uploaded" });
+    console.log(`Diagnose request from user`);
+
+    const { image, images } = req.body;
+
+    // Validate input
+    if (!image && (!images || !Array.isArray(images) || images.length === 0)) {
+      return res.status(400).json({ error: "No image(s) provided" });
     }
 
-    const base64Images = files.map(file => file.buffer.toString('base64'));
+    // Normalize into array
+    let base64Images = [];
+    if (images && Array.isArray(images) && images.length > 0) {
+      base64Images = images;
+    } else if (image) {
+      base64Images = [image];
+    }
+
     const payload = {
       type: base64Images.length > 1 ? "multiple" : "single",
       data: base64Images.length > 1 ? base64Images : base64Images[0]
@@ -780,7 +791,7 @@ app.post('/diagnose', authenticateToken, upload.array('images'), async (req, res
 
   } catch (error) {
     console.error("Diagnosis error:", error.message);
-    return res.status(500).json({ error: "Failed to diagnose image" });
+    return res.status(500).json({ error: "Failed to diagnose image(s)" });
   }
 });
 
