@@ -241,6 +241,7 @@ io.on('connection', async (socket) => {
   // Handle new chat session
   socket.on('start_chat', async (data) => {
     try {
+      console.log(`Starting new chat session for user ${socket.user.email}`);
       const sessionId = `${socket.user.id}_${Date.now()}`;
       
       const chatSession = new ChatSession({
