@@ -1,4 +1,4 @@
-// tests/server.test.js - Fixed version with proper MongoDB handling
+// tests/server.test.js - Updated version for base64 image handling
 const request = require('supertest');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
@@ -182,8 +182,14 @@ describe('AgriLens Server Test Suite', () => {
     });
   });
 
-  describe('Plant Disease Diagnosis', () => {
-    test('POST /diagnose should process image and return diagnosis', async () => {
+  describe('Plant Disease Diagnosis - Base64 Image Handling', () => {
+    // Helper function to create mock base64 image
+    const createMockBase64Image = () => {
+      // This is a minimal base64 encoded image (1x1 pixel PNG)
+      return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    };
+
+    test('POST /diagnose should process single base64 image and return diagnosis', async () => {
       // Mock OpenAI response
       const mockLLMResponse = {
         diseaseType: 'Bacterial Blight',
@@ -203,13 +209,14 @@ describe('AgriLens Server Test Suite', () => {
         }
       });
 
-      // Create mock image buffer
-      const mockImageBuffer = Buffer.from('fake-image-data');
+      const requestData = {
+        image: createMockBase64Image()
+      };
 
       const res = await request(app)
         .post('/diagnose')
         .set('Authorization', `Bearer ${authToken}`)
-        .attach('images', mockImageBuffer, 'test-image.jpg')
+        .send(requestData)
         .expect(200);
 
       expect(res.body.disease).toBe(mockLLMResponse.diseaseType);
@@ -222,40 +229,197 @@ describe('AgriLens Server Test Suite', () => {
       expect(savedDiagnosis.llmAnalysis.diseaseType).toBe(mockLLMResponse.diseaseType);
     });
 
-    test('POST /diagnose should fail without authentication', async () => {
-      const mockImageBuffer = Buffer.from('fake-image-data');
+    test('POST /diagnose should process multiple base64 images and return diagnosis', async () => {
+      // Mock OpenAI response
+      const mockLLMResponse = {
+        diseaseType: 'Leaf Spot Disease',
+        cropsAffected: ['Tomato'],
+        affectedAreas: ['Leaves', 'Stems'],
+        symptoms: ['Dark spots', 'Yellowing edges'],
+        recommendedAction: 'Remove affected leaves and apply fungicide'
+      };
+
+      axios.post.mockResolvedValue({
+        data: {
+          choices: [{
+            message: {
+              content: JSON.stringify(mockLLMResponse)
+            }
+          }]
+        }
+      });
+
+      const requestData = {
+        images: [
+          createMockBase64Image(),
+          createMockBase64Image(),
+          createMockBase64Image()
+        ]
+      };
 
       const res = await request(app)
         .post('/diagnose')
-        .attach('images', mockImageBuffer, 'test-image.jpg')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(requestData)
+        .expect(200);
+
+      expect(res.body.disease).toBe(mockLLMResponse.diseaseType);
+      expect(res.body.cropsAffected).toEqual(mockLLMResponse.cropsAffected);
+      expect(res.body.symptoms).toEqual(mockLLMResponse.symptoms);
+
+      // Verify diagnosis was saved to database
+      const savedDiagnosis = await Diagnosis.findOne({ userId: testUser._id });
+      expect(savedDiagnosis).toBeTruthy();
+      expect(savedDiagnosis.llmAnalysis.diseaseType).toBe(mockLLMResponse.diseaseType);
+    });
+
+    test('POST /diagnose should fail without authentication', async () => {
+      const requestData = {
+        image: createMockBase64Image()
+      };
+
+      const res = await request(app)
+        .post('/diagnose')
+        .send(requestData)
         .expect(401);
 
       expect(res.body.error).toBe('Access token required');
     });
 
-    test('POST /diagnose should fail without image', async () => {
+    test('POST /diagnose should fail without image data', async () => {
       const res = await request(app)
         .post('/diagnose')
         .set('Authorization', `Bearer ${authToken}`)
+        .send({})
         .expect(400);
 
-      expect(res.body.error).toBe('No image uploaded');
+      expect(res.body.error).toBe('No image(s) provided');
+    });
+
+    test('POST /diagnose should fail with empty images array', async () => {
+      const requestData = {
+        images: []
+      };
+
+      const res = await request(app)
+        .post('/diagnose')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(requestData)
+        .expect(400);
+
+      expect(res.body.error).toBe('No image(s) provided');
     });
 
     test('POST /diagnose should handle OpenAI API failure gracefully', async () => {
       // Mock OpenAI API failure
       axios.post.mockRejectedValue(new Error('OpenAI API Error'));
 
-      const mockImageBuffer = Buffer.from('fake-image-data');
+      const requestData = {
+        image: createMockBase64Image()
+      };
 
       const res = await request(app)
         .post('/diagnose')
         .set('Authorization', `Bearer ${authToken}`)
-        .attach('images', mockImageBuffer, 'test-image.jpg')
+        .send(requestData)
         .expect(200); // Should still return 200 with fallback response
 
       expect(res.body.disease).toBeDefined();
       expect(res.body.recommendedAction).toContain('consult with a local agricultural');
+    });
+
+    test('POST /diagnose should handle malformed JSON response from OpenAI', async () => {
+      // Mock OpenAI response with malformed JSON
+      axios.post.mockResolvedValue({
+        data: {
+          choices: [{
+            message: {
+              content: 'This is not valid JSON'
+            }
+          }]
+        }
+      });
+
+      const requestData = {
+        image: createMockBase64Image()
+      };
+
+      const res = await request(app)
+        .post('/diagnose')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(requestData)
+        .expect(200);
+
+      // Should fall back to default response
+      expect(res.body.disease).toBe('Analysis unavailable');
+      expect(res.body.recommendedAction).toContain('consult with a local agricultural');
+    });
+
+    test('POST /diagnose should properly format OpenAI request with image data', async () => {
+      const mockLLMResponse = {
+        diseaseType: 'Healthy Plant',
+        cropsAffected: ['Unknown crop'],
+        affectedAreas: ['None'],
+        symptoms: ['No symptoms detected'],
+        recommendedAction: 'Continue regular care'
+      };
+
+      axios.post.mockResolvedValue({
+        data: {
+          choices: [{
+            message: {
+              content: JSON.stringify(mockLLMResponse)
+            }
+          }]
+        }
+      });
+
+      const testBase64 = createMockBase64Image();
+      const requestData = {
+        image: testBase64
+      };
+
+      await request(app)
+        .post('/diagnose')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(requestData)
+        .expect(200);
+
+      // Verify that axios was called with correct parameters
+      expect(axios.post).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/chat/completions',
+        expect.objectContaining({
+          model: 'gpt-4o',
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'system',
+              content: expect.stringContaining('agricultural pathologist')
+            }),
+            expect.objectContaining({
+              role: 'user',
+              content: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'text',
+                  text: expect.stringContaining('Analyze the plant')
+                }),
+                expect.objectContaining({
+                  type: 'image_url',
+                  image_url: expect.objectContaining({
+                    url: `data:image/jpeg;base64,${testBase64}`,
+                    detail: 'high'
+                  })
+                })
+              ])
+            })
+          ])
+        }),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          })
+        })
+      );
     });
   });
 
