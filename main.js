@@ -192,7 +192,7 @@ ${userContext}
 Instructions:
 - Use the user's previous diagnoses to provide personalized advice
 - Reference specific past diagnoses when relevant
-- Provide practical, actionable advice for Kenyan farmers, using local terminology where appropriate
+- Provide practical, actionable advice for Kenyan farmers, using local terminology and names where appropriate
 - Be concise but thorough
 - If asked about diseases not in their history, provide general agricultural guidance
 - Always encourage consulting local agricultural extension services for complex issues`;
@@ -666,7 +666,7 @@ const getLLMAnalysisBypass = async (base64Images) => {
 
     Please provide a detailed analysis in the following JSON format:
     {
-      "diseaseType": "specific disease name or 'Healthy' if no disease detected",
+      "diseaseType": "specific disease name, in English and Common Kenyan name if available or 'Healthy' if no disease detected",
       "cropsAffected": ["crop type(s) identified"],
       "affectedAreas": ["specific plant parts affected"],
       "symptoms": ["visible symptoms observed"],
@@ -679,7 +679,7 @@ const getLLMAnalysisBypass = async (base64Images) => {
     const messages = [
       {
         role: 'system',
-        content: 'You are an expert agricultural pathologist. Analyze plant images to identify diseases and provide accurate information in JSON format only.'
+        content: 'You are an expert agricultural pathologist. Analyze plant images to identify diseases and provide accurate information in JSON format only. The disease names should be in English and include common Kenyan names if available, and symptoms should also be described using local terminology where applicable.'
       },
       {
         role: 'user',
