@@ -4,12 +4,9 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const multer = require('multer');
 const axios = require('axios');
-const path = require('path');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const { OAuth2Client } = require('google-auth-library');
 const http = require('http');
 const { Server } = require('socket.io');
+const { createClient } = require('@supabase/supabase-js');
 
 dotenv.config();
 
@@ -27,8 +24,8 @@ app.use(express.json(
   { limit: '10mb' }
 ));
 
-// Google OAuth2 client
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+// Supabase client
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
 // MongoDB connection
 mongoose.connect(process.env.MONGO_URL, {
@@ -36,22 +33,9 @@ mongoose.connect(process.env.MONGO_URL, {
 }).then(() => console.log("MongoDB connected"))
   .catch(err => console.error("MongoDB error:", err));
 
-// User Schema
-const userSchema = new mongoose.Schema({
-  firstName: { type: String, required: true },
-  lastName: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String }, // Optional for Google users
-  googleId: { type: String }, // For Google OAuth users
-  authProvider: { type: String, enum: ['local', 'google'], default: 'local' },
-  createdAt: { type: Date, default: Date.now }
-});
-
-const User = mongoose.model('User', userSchema);
-
 // Diagnosis Schema
 const diagnosisSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userId: { type: String, required: true },
   originalPrediction: {
     disease: String,
     accuracy: String
@@ -71,7 +55,7 @@ const Diagnosis = mongoose.model('Diagnosis', diagnosisSchema);
 
 // Chat Session Schema
 const chatSessionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userId: { type: String, required: true },
   sessionId: { type: String, required: true, unique: true },
   messages: [{
     role: { type: String, enum: ['user', 'assistant'], required: true },
@@ -89,65 +73,40 @@ const ChatSession = mongoose.model('ChatSession', chatSessionSchema);
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// JWT middleware
-const authenticateToken = (req, res, next) => {
+// Supabase auth middleware
+const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
+  console.log(token);
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) {
+    return res.status(403).json({ error: 'Invalid or expired token' });
+  }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: 'Invalid or expired token' });
-    }
-    req.user = user;
-    next();
-  });
+  req.user = user;
+  next();
 };
 
-// Socket.IO JWT middleware
-const authenticateSocketToken = (socket, next) => {
+// Socket.IO Supabase auth middleware
+const authenticateSocketToken = async (socket, next) => {
   const token = socket.handshake.auth.token;
-  
+
   if (!token) {
     return next(new Error('Access token required'));
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
-      return next(new Error('Invalid or expired token'));
-    }
-    socket.user = user;
-    next();
-  });
-};
+  const { data: { user }, error } = await supabase.auth.getUser(token);
 
-// Helper function to generate JWT
-const generateToken = (user) => {
-  return jwt.sign(
-    { 
-      id: user._id, 
-      email: user.email,
-      authProvider: user.authProvider 
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: '24h' }
-  );
-};
-
-// Helper function to verify Google token
-const verifyGoogleToken = async (token) => {
-  try {
-    const ticket = await googleClient.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
-    return ticket.getPayload();
-  } catch (error) {
-    throw new Error('Invalid Google token');
+  if (error || !user) {
+    return next(new Error('Invalid or expired token'));
   }
+
+  socket.user = user;
+  next();
 };
 
 // Helper function to get user's diagnosis context
@@ -413,199 +372,6 @@ io.on('connection', async (socket) => {
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({ status: "OK" });
-});
-
-// POST /signup - Regular signup
-app.post('/signup', async (req, res) => {
-  try {
-    const { firstName, lastName, email, password } = req.body;
-
-    // Validation
-    if (!firstName || !lastName || !email || !password) {
-      return res.status(400).json({ error: 'All fields are required' });
-    }
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ error: 'User already exists with this email' });
-    }
-
-    // Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    // Create user
-    const user = new User({
-      firstName,
-      lastName,
-      email,
-      password: hashedPassword,
-      authProvider: 'local'
-    });
-
-    await user.save();
-
-    // Generate token
-    const token = generateToken(user);
-
-    res.status(201).json({
-      message: 'User created successfully',
-      token,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        authProvider: user.authProvider
-      }
-    });
-
-  } catch (error) {
-    console.error('Signup error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// POST /signup/google - Google signup
-app.post('/signup/google', async (req, res) => {
-  try {
-    const { googleToken } = req.body;
-
-    if (!googleToken) {
-      return res.status(400).json({ error: 'Google token required' });
-    }
-
-    // Verify Google token
-    const googleUser = await verifyGoogleToken(googleToken);
-    
-    // Check if user already exists
-    const existingUser = await User.findOne({ email: googleUser.email });
-    if (existingUser) {
-      return res.status(400).json({ error: 'User already exists with this email' });
-    }
-
-    // Create user
-    const user = new User({
-      firstName: googleUser.given_name,
-      lastName: googleUser.family_name,
-      email: googleUser.email,
-      googleId: googleUser.sub,
-      authProvider: 'google'
-    });
-
-    await user.save();
-
-    // Generate token
-    const token = generateToken(user);
-
-    res.status(201).json({
-      message: 'User created successfully',
-      token,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        authProvider: user.authProvider
-      }
-    });
-
-  } catch (error) {
-    console.error('Google signup error:', error);
-    res.status(500).json({ error: 'Invalid Google token or internal server error' });
-  }
-});
-
-// POST /login - Regular login
-app.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-
-    // Find user
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(400).json({ error: 'Invalid credentials' });
-    }
-
-    // Check if user signed up with Google
-    if (user.authProvider === 'google') {
-      return res.status(400).json({ error: 'Please login with Google' });
-    }
-
-    // Verify password
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(400).json({ error: 'Invalid credentials' });
-    }
-
-    // Generate token
-    const token = generateToken(user);
-
-    res.json({
-      message: 'Login successful',
-      token,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        authProvider: user.authProvider
-      }
-    });
-
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: `Internal server error:\n${error}` });
-  }
-});
-
-// POST /login/google - Google login
-app.post('/login/google', async (req, res) => {
-  try {
-    const { googleToken } = req.body;
-
-    if (!googleToken) {
-      return res.status(400).json({ error: 'Google token required' });
-    }
-
-    // Verify Google token
-    const googleUser = await verifyGoogleToken(googleToken);
-    
-    // Find user
-    const user = await User.findOne({ email: googleUser.email });
-    if (!user) {
-      return res.status(400).json({ error: 'User not found. Please signup first.' });
-    }
-
-    // Check if user signed up with local auth
-    if (user.authProvider === 'local') {
-      return res.status(400).json({ error: 'Please login with email and password' });
-    }
-
-    // Generate token
-    const token = generateToken(user);
-
-    res.json({
-      message: 'Login successful',
-      token,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        authProvider: user.authProvider
-      }
-    });
-
-  } catch (error) {
-    console.error('Google login error:', error);
-    res.status(500).json({ error: 'Invalid Google token or internal server error' });
-  }
 });
 
 // Function to get LLM analysis
@@ -893,7 +659,6 @@ module.exports = {
   server, 
   io,
   // Also export models for direct testing if needed
-  User: require('mongoose').model('User'),
   Diagnosis: require('mongoose').model('Diagnosis'), 
   ChatSession: require('mongoose').model('ChatSession')
 };
