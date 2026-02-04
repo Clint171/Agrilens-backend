@@ -81,7 +81,6 @@ const authenticateToken = async (req, res, next) => {
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
-  console.log(token);
   const { data: { user }, error } = await supabase.auth.getUser(token);
   if (error || !user) {
     return res.status(403).json({ error: 'Invalid or expired token' });
@@ -586,6 +585,52 @@ app.get('/diagnoses', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("Get diagnoses error:", error);
     res.status(500).json({ error: "Failed to fetch diagnoses" });
+  }
+});
+
+app.get('/diagnoses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const diagnosis = await Diagnosis.findOne({
+      _id: id,
+      userId: req.user.id
+    });
+    if (!diagnosis) {
+      return res.status(404).json({ error: 'Diagnosis not found' });
+    }
+
+    res.json({
+      id: diagnosis._id,
+      disease: diagnosis.llmAnalysis.diseaseType,
+      cropsAffected: diagnosis.llmAnalysis.cropsAffected,
+      affectedAreas: diagnosis.llmAnalysis.affectedAreas,
+      symptoms: diagnosis.llmAnalysis.symptoms,
+      recommendedAction: diagnosis.llmAnalysis.recommendedAction,
+      confidenceScore: diagnosis.confidenceScore,
+      createdAt: diagnosis.createdAt
+    });
+  } catch (error) {
+    console.error('Get diagnosis error:', error);
+    res.status(500).json({ error: 'Failed to retrieve diagnosis' });
+  }
+});
+
+// Delete diagnosis
+app.delete('/diagnoses/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const diagnosis = await Diagnosis.findOneAndDelete({
+      _id: id,
+      userId: req.user.id
+    });
+
+    if (!diagnosis) {
+      return res.status(404).json({ error: 'Diagnosis not found' });
+    }
+    res.json({ message: 'Diagnosis deleted successfully' });
+  } catch (error) {
+    console.error('Delete diagnosis error:', error);
+    res.status(500).json({ error: 'Failed to delete diagnosis' });
   }
 });
 
