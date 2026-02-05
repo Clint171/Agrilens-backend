@@ -7,8 +7,11 @@ const axios = require('axios');
 const http = require('http');
 const { Server } = require('socket.io');
 const { createClient } = require('@supabase/supabase-js');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 dotenv.config();
+
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 
 const app = express();
 const server = http.createServer(app);
@@ -25,7 +28,7 @@ app.use(express.json(
 ));
 
 // Supabase client
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 // MongoDB connection
 mongoose.connect(process.env.MONGO_URL, {
@@ -47,6 +50,8 @@ const diagnosisSchema = new mongoose.Schema({
     symptoms: [String],
     recommendedAction: String
   },
+  plantImageUrl: String,
+  pictorialUrl: String,
   confidenceScore: Number,
   createdAt: { type: Date, default: Date.now }
 });
@@ -183,6 +188,55 @@ Instructions:
   } catch (error) {
     console.error('AI chat response error:', error);
     return "I apologize, but I'm having trouble processing your request right now. Please try again later or consult with a local agricultural expert.";
+  }
+};
+
+const uploadToSupabase = async (base64Data, fileName) => {
+  try {
+    const buffer = Buffer.from(base64Data, 'base64');
+    const { data, error } = await supabase.storage
+      .from('Agrilens images') // Ensure this bucket exists and is public
+      .upload(`${fileName}`, buffer, {
+        contentType: 'image/jpeg',
+        upsert: true
+      });
+
+    if (error) throw error;
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('Agrilens images')
+      .getPublicUrl(`${fileName}`);
+
+    return publicUrl;
+  } catch (err) {
+    console.error("Supabase Upload Error:", err);
+    return null;
+  }
+};
+
+const generateRecommendationPictorial = async (recommendationText, diseaseName) => {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-image" });
+    
+    // Context-aware prompt for Kenyan agriculture
+    const prompt = `A clear, instructional agricultural pictorial set in a Kenyan farm context. 
+    It illustrates the following recommended action for ${diseaseName}: "${recommendationText}". 
+    The style should be a professional, clean infographic with realistic African farmers and local crops. 
+    Avoid text in the image, focus on visual actions.`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    
+    // Google Imagen usually returns images as base64 in the response parts
+    const imagePart = response.candidates[0].content.parts.find(p => p.inlineData);
+    if (!imagePart) return null;
+
+    // Upload the generated AI image to Supabase
+    const fileName = `pictorial_${Date.now()}.png`;
+    return await uploadToSupabase(imagePart.inlineData.data, fileName);
+  } catch (error) {
+    console.error("Google Image Gen Error:", error);
+    return null; // Fallback to no image if generation fails
   }
 };
 
@@ -500,52 +554,38 @@ const getLLMAnalysisBypass = async (base64Images) => {
 // POST /diagnose - Enhanced with authentication and LLM analysis
 app.post('/diagnose', authenticateToken, async (req, res) => {
   try {
-    console.log(`Diagnose request from user`);
-
     const { image, images } = req.body;
-
-    // Validate input
-    if (!image && (!images || !Array.isArray(images) || images.length === 0)) {
-      return res.status(400).json({ error: "No image(s) provided" });
+    if (!image && (!images || images.length === 0)) {
+      return res.status(400).json({ error: "No images provided" });
     }
 
-    // Normalize into array
-    let base64Images = [];
-    if (images && Array.isArray(images) && images.length > 0) {
-      base64Images = images;
-    } else if (image) {
-      base64Images = [image];
-    }
-
-    const payload = {
-      type: base64Images.length > 1 ? "multiple" : "single",
-      data: base64Images.length > 1 ? base64Images : base64Images[0]
-    };
-
-    // Get prediction from model
-    // const modelResponse = await axios.post(`${process.env.MODEL_URL}`, payload);
-    const { disease, accuracy } = { disease: 'Unknown', accuracy: 0 };
-
-    // Get LLM analysis
-    // const llmAnalysis = await getLLMAnalysis(disease, accuracy);
-
-    // Bypass
+    const base64Images = images || [image];
+    
+    // 1. Get LLM Analysis (as you currently do)
     const llmAnalysis = await getLLMAnalysisBypass(base64Images);
 
-    // Save to database
+    // 2. Upload original plant image to Supabase
+    const plantImageName = `${req.user.id}_plant_${Date.now()}.jpg`;
+    const plantImageUrl = await uploadToSupabase(base64Images[0], plantImageName);
+
+    // 3. Generate the instructional pictorial using Google AI
+    const pictorialUrl = await generateRecommendationPictorial(
+      llmAnalysis.recommendedAction,
+      llmAnalysis.diseaseType
+    );
+
+    // 4. Save to MongoDB
     const diagnosis = new Diagnosis({
       userId: req.user.id,
-      originalPrediction: {
-        disease,
-        accuracy
-      },
+      originalPrediction: { disease: 'Unknown', accuracy: 0 },
       llmAnalysis,
-      confidenceScore: parseFloat(accuracy)
+      plantImageUrl,
+      pictorialUrl,
+      confidenceScore: 0
     });
 
     await diagnosis.save();
 
-    // Return response
     res.json({
       id: diagnosis._id,
       disease: llmAnalysis.diseaseType,
@@ -553,13 +593,15 @@ app.post('/diagnose', authenticateToken, async (req, res) => {
       affectedAreas: llmAnalysis.affectedAreas,
       symptoms: llmAnalysis.symptoms,
       recommendedAction: llmAnalysis.recommendedAction,
-      confidenceScore: parseFloat(accuracy),
+      plantImageUrl : diagnosis.plantImageUrl,    // Send back to frontend
+      pictorialUrl : diagnosis.pictorialUrl,   // Send back to frontend
+      confidenceScore: 0,
       createdAt: diagnosis.createdAt
     });
 
   } catch (error) {
-    console.error("Diagnosis error:", error.message);
-    return res.status(500).json({ error: "Failed to diagnose image(s)" });
+    console.error("Diagnosis error:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -577,8 +619,11 @@ app.get('/diagnoses', authenticateToken, async (req, res) => {
       affectedAreas: diagnosis.llmAnalysis.affectedAreas,
       symptoms: diagnosis.llmAnalysis.symptoms,
       recommendedAction: diagnosis.llmAnalysis.recommendedAction,
+      plantImageUrl : diagnosis.plantImageUrl,    // Send back to frontend
+      pictorialUrl : diagnosis.pictorialUrl,     // Send back to frontend
       confidenceScore: diagnosis.confidenceScore,
       createdAt: diagnosis.createdAt
+
     }));
 
     res.json(formattedDiagnoses);
@@ -606,6 +651,8 @@ app.get('/diagnoses/:id', authenticateToken, async (req, res) => {
       affectedAreas: diagnosis.llmAnalysis.affectedAreas,
       symptoms: diagnosis.llmAnalysis.symptoms,
       recommendedAction: diagnosis.llmAnalysis.recommendedAction,
+      plantImageUrl : diagnosis.plantImageUrl,    // Send back to frontend
+      pictorialUrl : diagnosis.pictorialUrl,     // Send back to frontend
       confidenceScore: diagnosis.confidenceScore,
       createdAt: diagnosis.createdAt
     });
