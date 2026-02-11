@@ -260,7 +260,7 @@ const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null) => {
     Return ONLY a valid JSON object:
     {
       "isModelCorrect": true/false,
-      "diseaseType": "specific disease name",
+      "diseaseType": "specific disease name, in English and local Kenyan name if possible",
       "cropsAffected": ["crop1", "crop2"],
       "affectedAreas": ["area1", "area2"],
       "symptoms": ["symptom1", "symptom2"],
@@ -501,130 +501,6 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK" });
 });
 
-// Function to get LLM analysis
-const getLLMAnalysis = async (disease, accuracy) => {
-  try {
-    const prompt = `Analyze this plant disease diagnosis:
-    Disease: ${disease}
-    Confidence: ${accuracy}
-    
-    Please provide a detailed analysis in the following JSON format:
-    {
-      "diseaseType": "specific disease name",
-      "cropsAffected": ["crop1", "crop2"],
-      "affectedAreas": ["area1", "area2"],
-      "symptoms": ["symptom1", "symptom2"],
-      "recommendedAction": "detailed recommended action"
-    }
-    
-    Only return the JSON response, no additional text.`;
-
-    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an expert agricultural pathologist. Provide accurate information about plant diseases in JSON format only.'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      max_tokens: 500,
-      temperature: 0.3
-    }, {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    return JSON.parse(response.data.choices[0].message.content);
-  } catch (error) {
-    console.error('LLM analysis error:', error);
-    // Return default analysis if LLM fails
-    return {
-      diseaseType: disease,
-      cropsAffected: ['Unknown'],
-      affectedAreas: ['Unknown'],
-      symptoms: ['Please consult agricultural expert'],
-      recommendedAction: 'Please consult with a local agricultural extension officer for proper diagnosis and treatment recommendations.'
-    };
-  }
-};
-
-// Bypass model, for test
-const getLLMAnalysisBypass = async (base64Images) => {
-  try {
-    const prompt = `Analyze the plant in the uploaded image to identify any diseases or health issues.
-
-    Please provide a detailed analysis in the following JSON format:
-    {
-      "diseaseType": "specific disease name, in English and Common Kenyan name if available or 'Healthy' if no disease detected",
-      "cropsAffected": ["crop type(s) identified"],
-      "affectedAreas": ["specific plant parts affected"],
-      "symptoms": ["visible symptoms observed"],
-      "recommendedAction": "detailed recommended treatment or prevention measures"
-    }
-    
-    Only return a valid JSON response, no additional text.`;
-
-    // Prepare messages with image(s)
-    const messages = [
-      {
-        role: 'system',
-        content: 'You are an expert agricultural pathologist. Analyze plant images to identify diseases and provide accurate information in JSON format only. The disease names should be in English and include common Kenyan names if available, and symptoms should also be described using local terminology where applicable.'
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: prompt
-          }
-        ]
-      }
-    ];
-
-    // Add images to the user message
-    const imageArray = Array.isArray(base64Images) ? base64Images : [base64Images];
-    imageArray.forEach(base64Image => {
-      messages[1].content.push({
-        type: 'image_url',
-        image_url: {
-          url: `data:image/jpeg;base64,${base64Image}`,
-          detail: 'high'
-        }
-      });
-    });
-
-    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-4o', // Using GPT-4 Vision model for image analysis
-      messages: messages,
-      max_tokens: 500,
-      temperature: 0.3
-    }, {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    return JSON.parse(response.data.choices[0].message.content.replace(/`/g, '').replace(/json/, ''));
-  } catch (error) {
-    console.error('LLM analysis error:', error);
-    // Return default analysis if LLM fails
-    return {
-      diseaseType: 'Analysis unavailable',
-      cropsAffected: ['Unable to identify'],
-      affectedAreas: ['Unable to determine'],
-      symptoms: ['Please consult agricultural expert'],
-      recommendedAction: 'Please consult with a local agricultural extension officer for proper diagnosis and treatment recommendations.'
-    };
-  }
-};
-
 // POST /diagnose - Enhanced with authentication and LLM analysis
 app.post('/diagnose', authenticateToken, async (req, res) => {
   try {
@@ -634,48 +510,69 @@ app.post('/diagnose', authenticateToken, async (req, res) => {
     }
 
     const base64Images = images || [image];
-    
-    // 1. Get LLM Analysis (as you currently do)
-    const llmAnalysis = await getLLMAnalysisBypass(base64Images);
+    const primaryImage = base64Images[0];
 
-    // 2. Upload original plant image to Supabase
+    // 1. Get Prediction from your external MODEL_URL
+    let prediction;
+    try {
+      const modelResponse = await axios.post(process.env.MODEL_URL, {
+        type: "single",
+        data: primaryImage 
+      }, { timeout: 10000 }); // 10s timeout for model safety
+      
+      prediction = modelResponse.data; // Expecting { disease, accuracy }
+    } catch (modelError) {
+      console.error("External Model Error:", modelError.message);
+      // Fallback: If model is down, we let LLM handle it (Bypass mode)
+      prediction = { disease: 'Unknown', accuracy: 0 };
+    }
+
+    // 2. Get LLM Verification and Analysis (using the function from the previous step)
+    // This uses the model's prediction as context for the "Judge"
+    const result = await getVerifiedLLMAnalysis(base64Images, prediction);
+
+    // 3. Parallel Tasks: Upload to Supabase and Generate Pictorial
     const plantImageName = `${req.user.id}_plant_${Date.now()}.jpg`;
-    const plantImageUrl = await uploadToSupabase(base64Images[0], plantImageName);
-
-    // 3. Generate the instructional pictorial using Google AI
-    const pictorialUrl = await generateRecommendationPictorial(
-      llmAnalysis.recommendedAction,
-      llmAnalysis.diseaseType
-    );
+    
+    const [plantImageUrl, pictorialUrl] = await Promise.all([
+      uploadToSupabase(primaryImage, plantImageName),
+      generateRecommendationPictorial(result.recommendedAction, result.diseaseType)
+    ]);
 
     // 4. Save to MongoDB
+    // We keep the original model's confidence as requested
     const diagnosis = new Diagnosis({
       userId: req.user.id,
-      originalPrediction: { disease: 'Unknown', accuracy: 0 },
-      llmAnalysis,
+      originalPrediction: { 
+        disease: prediction.disease, 
+        accuracy: prediction.accuracy.toString() 
+      },
+      llmAnalysis: result,
       plantImageUrl,
       pictorialUrl,
-      confidenceScore: 0
+      confidenceScore: prediction.accuracy, // Original model confidence
+      createdAt: new Date()
     });
 
     await diagnosis.save();
 
+    // 5. Response to Frontend
     res.json({
       id: diagnosis._id,
-      disease: llmAnalysis.diseaseType,
-      cropsAffected: llmAnalysis.cropsAffected,
-      affectedAreas: llmAnalysis.affectedAreas,
-      symptoms: llmAnalysis.symptoms,
-      recommendedAction: llmAnalysis.recommendedAction,
-      plantImageUrl : diagnosis.plantImageUrl,    // Send back to frontend
-      pictorialUrl : diagnosis.pictorialUrl,   // Send back to frontend
-      confidenceScore: 0,
+      disease: result.diseaseType,
+      isModelCorrect: result.isModelCorrect,
+      cropsAffected: result.cropsAffected,
+      symptoms: result.symptoms,
+      recommendedAction: result.recommendedAction,
+      plantImageUrl,
+      pictorialUrl,
+      confidenceScore: prediction.accuracy, 
       createdAt: diagnosis.createdAt
     });
 
   } catch (error) {
-    console.error("Diagnosis error:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Critical Diagnosis failure:", error);
+    res.status(500).json({ error: "Failed to process diagnosis" });
   }
 });
 
