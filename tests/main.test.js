@@ -5,13 +5,28 @@ const axios = require('axios');
 // Mock external dependencies
 jest.mock('axios');
 jest.mock('@supabase/supabase-js');
+jest.mock('@google/generative-ai', () => ({
+  GoogleGenerativeAI: jest.fn().mockImplementation(() => ({
+    getGenerativeModel: jest.fn().mockReturnValue({
+      generateContent: jest.fn().mockResolvedValue({
+        response: {
+          candidates: [{
+            content: {
+              parts: [{ inlineData: { data: 'mock-pictorial-base64' } }]
+            }
+          }]
+        }
+      })
+    })
+  }))
+}));
 
 const { createClient } = require('@supabase/supabase-js');
 
 // Import server and models
 let app, Diagnosis, ChatSession;
 
-describe('AgriLens Server - Current Architecture Tests', () => {
+describe('AgriLens Server - Judge & Analysis Tests', () => {
   const mockUserId = 'user_12345';
   const mockUserEmail = 'farmer@example.ke';
   const validToken = 'valid-supabase-token';
@@ -65,22 +80,28 @@ describe('AgriLens Server - Current Architecture Tests', () => {
     });
   });
 
-  describe('Plant Disease Diagnosis (/diagnose)', () => {
+  describe('Plant Disease Diagnosis (/diagnose) - Judge Logic', () => {
     const mockImage = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
-    test('Successfully processes image and saves to MongoDB/Supabase', async () => {
-      const mockLLMData = {
-        diseaseType: 'Maize Lethal Necrosis',
-        cropsAffected: ['Maize'],
+    test('Should query external model, then verify and correct via LLM', async () => {
+      // 1. Mock Prediction from MODEL_URL (Model thinks it's Healthy)
+      axios.post.mockResolvedValueOnce({
+        data: { disease: 'Healthy', accuracy: 88.5 }
+      });
+
+      // 2. Mock OpenAI Correction (LLM says it's actually Early Blight)
+      const mockLLMCorrection = {
+        isModelCorrect: false,
+        diseaseType: 'Tomato Early Blight',
+        cropsAffected: ['Tomato'],
         affectedAreas: ['Leaves'],
-        symptoms: ['Yellowing', 'Drying'],
-        recommendedAction: 'Uproot and burn affected plants.'
+        symptoms: ['Dark spots', 'Bullseye pattern'],
+        recommendedAction: 'Apply copper-based fungicide.'
       };
 
-      // Mock OpenAI/GPT-4o response
       axios.post.mockResolvedValueOnce({
         data: {
-          choices: [{ message: { content: JSON.stringify(mockLLMData) } }]
+          choices: [{ message: { content: JSON.stringify(mockLLMCorrection) } }]
         }
       });
 
@@ -90,13 +111,23 @@ describe('AgriLens Server - Current Architecture Tests', () => {
         .send({ image: mockImage })
         .expect(200);
 
-      expect(res.body.disease).toBe('Maize Lethal Necrosis');
-      expect(res.body.plantImageUrl).toBeDefined();
+      // --- Assertions ---
       
-      // Verify DB persistence
+      // Check if the final result is the LLM correction, not the model's wrong guess
+      expect(res.body.disease).toBe('Tomato Early Blight');
+      
+      // Check if the original model's confidence was preserved
+      expect(res.body.confidenceScore).toBe(88.5);
+      
+      // Verify persistence in MongoDB
       const saved = await Diagnosis.findOne({ userId: mockUserId });
-      expect(saved).toBeTruthy();
-      expect(saved.llmAnalysis.diseaseType).toBe('Maize Lethal Necrosis');
+      expect(saved.originalPrediction.disease).toBe('Healthy'); // Verify history kept original guess
+      expect(saved.llmAnalysis.diseaseType).toBe('Tomato Early Blight');
+      
+      // Ensure axios was called with the correct sequence
+      expect(axios.post).toHaveBeenCalledTimes(2);
+      // First call should be to the MODEL_URL (check env variable usage)
+      expect(axios.post).toHaveBeenNthCalledWith(1, process.env.MODEL_URL, expect.anything(), expect.anything());
     });
   });
 
