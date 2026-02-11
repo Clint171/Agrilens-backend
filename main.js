@@ -240,6 +240,80 @@ const generateRecommendationPictorial = async (recommendationText, diseaseName) 
   }
 };
 
+// This function now acts as both a Judge and an Analyst
+const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null) => {
+  try {
+    const { disease, accuracy } = modelPrediction || { disease: 'Unknown', accuracy: 0 };
+    
+    // The prompt now includes the "Judging" logic
+    const prompt = `
+    I have a plant image and a computer vision model prediction.
+    Model Prediction: ${disease} (Confidence: ${accuracy}%)
+
+    Task:
+    1. Look at the image.
+    2. Determine if the model's prediction (${disease}) is correct.
+    3. If the model is CORRECT, provide an analysis for "${disease}".
+    4. If the model is WRONG or the prediction is "Unknown", identify the correct disease yourself and provide the analysis.
+    5. Always provide the common Kenyan name for the disease if available.
+
+    Return ONLY a valid JSON object:
+    {
+      "isModelCorrect": true/false,
+      "diseaseType": "specific disease name",
+      "cropsAffected": ["crop1", "crop2"],
+      "affectedAreas": ["area1", "area2"],
+      "symptoms": ["symptom1", "symptom2"],
+      "recommendedAction": "detailed action"
+    }`;
+
+    const messages = [
+      {
+        role: 'system',
+        content: 'You are an expert agricultural pathologist. Analyze plant images to verify model predictions and identify diseases accurately.'
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt }
+        ]
+      }
+    ];
+
+    const imageArray = Array.isArray(base64Images) ? base64Images : [base64Images];
+    imageArray.forEach(base64Image => {
+      messages[1].content.push({
+        type: 'image_url',
+        image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: 'high' }
+      });
+    });
+
+    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o', 
+      messages: messages,
+      response_format: { type: "json_object" }, // Ensures valid JSON
+      max_tokens: 800,
+      temperature: 0.2
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return JSON.parse(response.data.choices[0].message.content);
+  } catch (error) {
+    console.error('LLM verification error:', error);
+    return {
+      diseaseType: modelPrediction?.disease || 'Analysis unavailable',
+      cropsAffected: ['Unknown'],
+      affectedAreas: ['Unknown'],
+      symptoms: ['Error processing image'],
+      recommendedAction: 'Please consult a local agricultural officer.'
+    };
+  }
+};
+
 // Socket.IO connection handling
 io.use(authenticateSocketToken);
 
