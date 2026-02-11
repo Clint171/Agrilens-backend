@@ -222,7 +222,7 @@ const generateRecommendationPictorial = async (recommendationText, diseaseName) 
     const prompt = `A clear, instructional agricultural pictorial set in a Kenyan farm context. 
     It illustrates the following recommended action for ${diseaseName}: "${recommendationText}". 
     The style should be a professional, clean infographic with realistic African farmers and local crops. 
-    Avoid text in the image, focus on visual actions.`;
+    Avoid text in the image, focus on visual explanation.`;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
