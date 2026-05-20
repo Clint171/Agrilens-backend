@@ -183,7 +183,7 @@ const getAIChatResponse = async (messages, userContext, genAI) => {
 };
 
 const uploadToSupabase = async (base64Data, fileName) => {
-  try {""
+  try {
     const buffer = Buffer.from(base64Data, 'base64');
     const { data, error } = await supabase.storage
       .from('Agrilens images') // Ensure this bucket exists and is public
@@ -259,41 +259,40 @@ const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null, genA
     }`;
 
     const imageArray = Array.isArray(base64Images) ? base64Images : [base64Images];
- 
-    const contents = [
-      {
-      inlineData: {
-        mimeType: 'image/jpeg',
-        data: imageArray[0],
-      },
-      },
-      { text: prompt }
-    ];
 
-    const llmModel = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
-    const response = await llmModel.generateContent({
-      contents: contents,
+    // Fallback: send the image as base64 inside a chat message so the chat API can analyze it as text.
+    const systemInstruction = 'You are an expert agricultural pathologist. Analyze plant images to verify model predictions and identify diseases accurately. Return ONLY a valid JSON object matching the requested schema.';
+
+    const chat = genAI.chats.create({
+      model: "gemini-3.5-flash",
       config: {
-        systemInstruction: 'You are an expert agricultural pathologist. Analyze plant images to verify model predictions and identify diseases accurately.',
-        temperature: 0.2,
-        responseFormat: {
-          type: 'json_object',
-          jsonObjectSpecs: {
-            properties: {
-              isModelCorrect: { type: 'boolean' },
-              diseaseType: { type: 'string' },
-              cropsAffected: { type: 'array', items: { type: 'string' } },
-              affectedAreas: { type: 'array', items: { type: 'string' } },
-              symptoms: { type: 'array', items: { type: 'string' } },
-              recommendedAction: { type: 'string' }
-            },
-            required: ['isModelCorrect', 'diseaseType', 'cropsAffected', 'affectedAreas', 'symptoms', 'recommendedAction']
-          }
-        }
-      },
+        systemInstruction,
+        temperature: 0.2
+      }
     });
 
-    return response.text;
+    const userMessage = `ImageBase64:${imageArray[0]}\n\n${prompt}`;
+
+    const response = await chat.sendMessage({
+      message: { parts: [{ text: userMessage }] }
+    });
+
+    // Try to parse JSON returned by the LLM
+    try {
+      const parsed = JSON.parse(response.text);
+      return parsed;
+    } catch (err) {
+      console.error('Failed to parse LLM JSON response:', err);
+      // If parsing fails, return a safe fallback structure
+      return {
+        isModelCorrect: false,
+        diseaseType: modelPrediction?.disease || 'Analysis unavailable',
+        cropsAffected: ['Unknown'],
+        affectedAreas: ['Unknown'],
+        symptoms: ['Error processing image'],
+        recommendedAction: 'Please consult a local agricultural officer.'
+      };
+    }
   } catch (error) {
     console.error('LLM verification error:', error);
     return {
