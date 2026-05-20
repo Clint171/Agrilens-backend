@@ -6,7 +6,6 @@ required_vars=(
     "MONGO_URL"
     "MODEL_URL"
     "CLIENT_URL"
-    "OPENAI_API_KEY"
     "SUPABASE_URL"
     "SUPABASE_SERVICE_ROLE_KEY"
     "GOOGLE_API_KEY"

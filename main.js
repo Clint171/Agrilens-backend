@@ -126,14 +126,13 @@ const getUserDiagnosisContext = async (userId) => {
 
     const contextString = diagnoses.map((diagnosis, index) => {
       return `Diagnosis ${index + 1} (${diagnosis.createdAt.toDateString()}):
-- Disease: ${diagnosis.llmAnalysis.diseaseType}
-- Crops Affected: ${diagnosis.llmAnalysis.cropsAffected.join(', ')}
-- Affected Areas: ${diagnosis.llmAnalysis.affectedAreas.join(', ')}
-- Symptoms: ${diagnosis.llmAnalysis.symptoms.join(', ')}
-- Recommended Action: ${diagnosis.llmAnalysis.recommendedAction}
-- Confidence Score: ${diagnosis.confidenceScore}%`;
+              - Disease: ${diagnosis.llmAnalysis.diseaseType}
+              - Crops Affected: ${diagnosis.llmAnalysis.cropsAffected.join(', ')}
+              - Affected Areas: ${diagnosis.llmAnalysis.affectedAreas.join(', ')}
+              - Symptoms: ${diagnosis.llmAnalysis.symptoms.join(', ')}
+              - Recommended Action: ${diagnosis.llmAnalysis.recommendedAction}
+              - Confidence Score: ${diagnosis.confidenceScore}%`;
     }).join('\n\n');
-
     return `Previous diagnoses for context:\n\n${contextString}`;
   } catch (error) {
     console.error('Error fetching diagnosis context:', error);
@@ -146,45 +145,37 @@ const getAIChatResponse = async (messages, userContext) => {
   try {
     const systemPrompt = `You are AgriLens AI, an expert agricultural assistant specializing in plant disease diagnosis and farm management. You help farmers and agricultural professionals with:
 
-1. Plant disease identification and treatment
-2. Crop management advice
-3. Agricultural best practices
-4. Interpretation of previous diagnoses
+      1. Plant disease identification and treatment
+      2. Crop management advice
+      3. Agricultural best practices
+      4. Interpretation of previous diagnoses
 
-User Context:
-${userContext}
+      User Context:
+      ${userContext}
 
-Instructions:
-- Use the user's previous diagnoses to provide personalized advice
-- Reference specific past diagnoses when relevant
-- Provide practical, actionable advice for Kenyan farmers, using local terminology and names where appropriate
-- Be concise but thorough
-- If asked about diseases not in their history, provide general agricultural guidance
-- Always encourage consulting local agricultural extension services for complex issues`;
+      Instructions:
+      - Use the user's previous diagnoses to provide personalized advice
+      - Reference specific past diagnoses when relevant
+      - Provide practical, actionable advice for Kenyan farmers, using local terminology and names where appropriate
+      - Be concise but thorough
+      - If asked about diseases not in their history, provide general agricultural guidance
+      - Encourage consulting local agricultural extension services for complex issues`;
 
-    const chatMessages = [
-      {
-        role: 'system',
-        content: systemPrompt
+    
+    const chat = genAI.chats.create({
+      model: "gemini-3.5-flash",
+      history: [messages.slice(0, messages.length - 1)],
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.2,
       },
-      ...messages
-    ];
-
-    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-4',
-      messages: chatMessages,
-      max_tokens: 800,
-      temperature: 0.7,
-      presence_penalty: 0.1,
-      frequency_penalty: 0.1
-    }, {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
     });
 
-    return response.data.choices[0].message.content;
+
+    const response = await chat.sendMessage({
+      message: messages.pop(),
+    });
+    return response.text;
   } catch (error) {
     console.error('AI chat response error:', error);
     return "I apologize, but I'm having trouble processing your request right now. Please try again later or consult with a local agricultural expert.";
@@ -192,7 +183,7 @@ Instructions:
 };
 
 const uploadToSupabase = async (base64Data, fileName) => {
-  try {
+  try {""
     const buffer = Buffer.from(base64Data, 'base64');
     const { data, error } = await supabase.storage
       .from('Agrilens images') // Ensure this bucket exists and is public
@@ -220,9 +211,9 @@ const generateRecommendationPictorial = async (recommendationText, diseaseName) 
     
     // Context-aware prompt for Kenyan agriculture
     const prompt = `A clear, instructional agricultural pictorial set in a Kenyan farm context. 
-    It illustrates the following recommended action for ${diseaseName}: "${recommendationText}". 
-    The style should be a professional, clean infographic with realistic African farmers and local crops. 
-    Avoid text in the image, focus on visual explanation.`;
+                    It illustrates the following recommended action for ${diseaseName}: "${recommendationText}". 
+                    The style should be a professional, clean infographic with realistic African farmers and local crops. 
+                    Avoid text in the image, focus on visual explanation.`;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
@@ -267,41 +258,42 @@ const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null) => {
       "recommendedAction": "detailed action"
     }`;
 
-    const messages = [
+    const imageArray = Array.isArray(base64Images) ? base64Images : [base64Images];
+ 
+    const contents = [
       {
-        role: 'system',
-        content: 'You are an expert agricultural pathologist. Analyze plant images to verify model predictions and identify diseases accurately.'
+      inlineData: {
+        mimeType: 'image/jpeg',
+        data: imageArray[0],
       },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt }
-        ]
-      }
+      },
+      { text: prompt }
     ];
 
-    const imageArray = Array.isArray(base64Images) ? base64Images : [base64Images];
-    imageArray.forEach(base64Image => {
-      messages[1].content.push({
-        type: 'image_url',
-        image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: 'high' }
-      });
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: contents,
+      config: {
+        systemInstruction: 'You are an expert agricultural pathologist. Analyze plant images to verify model predictions and identify diseases accurately.',
+        temperature: 0.2,
+        responseFormat: {
+          type: 'json_object',
+          jsonObjectSpecs: {
+            properties: {
+              isModelCorrect: { type: 'boolean' },
+              diseaseType: { type: 'string' },
+              cropsAffected: { type: 'array', items: { type: 'string' } },
+              affectedAreas: { type: 'array', items: { type: 'string' } },
+              symptoms: { type: 'array', items: { type: 'string' } },
+              recommendedAction: { type: 'string' }
+            },
+            required: ['isModelCorrect', 'diseaseType', 'cropsAffected', 'affectedAreas', 'symptoms', 'recommendedAction']
+          }
+        }
+      },
     });
 
-    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-4o', 
-      messages: messages,
-      response_format: { type: "json_object" }, // Ensures valid JSON
-      max_tokens: 800,
-      temperature: 0.2
-    }, {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    return JSON.parse(response.data.choices[0].message.content);
+    return response.text;
   } catch (error) {
     console.error('LLM verification error:', error);
     return {
@@ -390,7 +382,7 @@ io.on('connection', async (socket) => {
       // Prepare messages for AI
       const messagesForAI = chatSession.messages.map(msg => ({
         role: msg.role,
-        content: msg.content
+        parts: [{ text: msg.content }],
       }));
 
       // Get AI response
@@ -398,7 +390,7 @@ io.on('connection', async (socket) => {
 
       // Add AI response to session
       chatSession.messages.push({
-        role: 'assistant',
+        role: 'model',
         content: aiResponse
       });
 
