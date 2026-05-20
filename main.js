@@ -270,8 +270,8 @@ const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null, genA
       { text: prompt }
     ];
 
-    const response = await genAI.models.generateContent({
-      model: "gemini-3.5-flash",
+    const llmModel = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
+    const response = await llmModel.generateContent({
       contents: contents,
       config: {
         systemInstruction: 'You are an expert agricultural pathologist. Analyze plant images to verify model predictions and identify diseases accurately.',

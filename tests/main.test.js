@@ -5,21 +5,29 @@ const axios = require('axios');
 // Mock external dependencies
 jest.mock('axios');
 jest.mock('@supabase/supabase-js');
-jest.mock('@google/generative-ai', () => ({
-  GoogleGenerativeAI: jest.fn().mockImplementation(() => ({
-    getGenerativeModel: jest.fn().mockReturnValue({
-      generateContent: jest.fn().mockResolvedValue({
-        response: {
-          candidates: [{
-            content: {
-              parts: [{ inlineData: { data: 'mock-pictorial-base64' } }]
-            }
-          }]
-        }
+jest.mock('@google/generative-ai', () => {
+  let mockInstance;
+  const GoogleGenerativeAI = jest.fn().mockImplementation(() => {
+    mockInstance = {
+      getGenerativeModel: jest.fn().mockReturnValue({
+        generateContent: jest.fn().mockResolvedValue({
+          response: {
+            candidates: [{
+              content: {
+                parts: [{ inlineData: { data: 'mock-pictorial-base64' } }]
+              }
+            }]
+          }
+        })
       })
-    })
-  }))
-}));
+    };
+    return mockInstance;
+  });
+  return {
+    GoogleGenerativeAI,
+    __getGoogleGenAIInstance: () => mockInstance
+  };
+});
 
 const { createClient } = require('@supabase/supabase-js');
 
@@ -89,7 +97,7 @@ describe('AgriLens Server - Judge & Analysis Tests', () => {
         data: { disease: 'Healthy', accuracy: 88.5 }
       });
 
-      // 2. Mock OpenAI Correction (LLM says it's actually Early Blight)
+      // 2. Mock LLM verification and correction using the Google Generative AI client
       const mockLLMCorrection = {
         isModelCorrect: false,
         diseaseType: 'Tomato Early Blight',
@@ -99,10 +107,9 @@ describe('AgriLens Server - Judge & Analysis Tests', () => {
         recommendedAction: 'Apply copper-based fungicide.'
       };
 
-      axios.post.mockResolvedValueOnce({
-        data: {
-          choices: [{ message: { content: JSON.stringify(mockLLMCorrection) } }]
-        }
+      const googleGenAIInstance = require('@google/generative-ai').__getGoogleGenAIInstance();
+      googleGenAIInstance.getGenerativeModel().generateContent.mockResolvedValueOnce({
+        text: mockLLMCorrection
       });
 
       const res = await request(app)
@@ -124,9 +131,8 @@ describe('AgriLens Server - Judge & Analysis Tests', () => {
       expect(saved.originalPrediction.disease).toBe('Healthy'); // Verify history kept original guess
       expect(saved.llmAnalysis.diseaseType).toBe('Tomato Early Blight');
       
-      // Ensure axios was called with the correct sequence
-      expect(axios.post).toHaveBeenCalledTimes(2);
-      // First call should be to the MODEL_URL (check env variable usage)
+      // Ensure axios was called only for the external model prediction
+      expect(axios.post).toHaveBeenCalledTimes(1);
       expect(axios.post).toHaveBeenNthCalledWith(1, process.env.MODEL_URL, expect.anything(), expect.anything());
     });
   });
