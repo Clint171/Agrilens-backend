@@ -141,7 +141,7 @@ const getUserDiagnosisContext = async (userId) => {
 };
 
 // Helper function to get AI chat response
-const getAIChatResponse = async (messages, userContext) => {
+const getAIChatResponse = async (messages, userContext, genAI) => {
   try {
     const systemPrompt = `You are AgriLens AI, an expert agricultural assistant specializing in plant disease diagnosis and farm management. You help farmers and agricultural professionals with:
 
@@ -232,7 +232,7 @@ const generateRecommendationPictorial = async (recommendationText, diseaseName) 
 };
 
 // This function now acts as both a Judge and an Analyst
-const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null) => {
+const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null, genAI) => {
   try {
     const { disease, accuracy } = modelPrediction || { disease: 'Unknown', accuracy: 0 };
     
@@ -386,7 +386,7 @@ io.on('connection', async (socket) => {
       }));
 
       // Get AI response
-      const aiResponse = await getAIChatResponse(messagesForAI, userContext);
+      const aiResponse = await getAIChatResponse(messagesForAI, userContext, genAI);
 
       // Add AI response to session
       chatSession.messages.push({
@@ -521,7 +521,7 @@ app.post('/diagnose', authenticateToken, async (req, res) => {
 
     // 2. Get LLM Verification and Analysis (using the function from the previous step)
     // This uses the model's prediction as context for the "Judge"
-    const result = await getVerifiedLLMAnalysis(base64Images, prediction);
+    const result = await getVerifiedLLMAnalysis(base64Images, prediction, genAI);
 
     // 3. Parallel Tasks: Upload to Supabase and Generate Pictorial
     const plantImageName = `${req.user.id}_plant_${Date.now()}.jpg`;
