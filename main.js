@@ -270,7 +270,7 @@ const getVerifiedLLMAnalysis = async (base64Images, modelPrediction = null) => {
       { text: prompt }
     ];
 
-    const response = await ai.models.generateContent({
+    const response = await genAI.models.generateContent({
       model: "gemini-3.5-flash",
       contents: contents,
       config: {
